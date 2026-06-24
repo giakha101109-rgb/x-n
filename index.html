@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>LLCS RP - Hệ Thống Xử Án</title>
+
+  <!-- jsPDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{--bg1:#0f172a;--bg2:#1e293b;--panel:#111827;--accent:#38bdf8;--muted:#94a3b8}
+    html,body{height:100%;margin:0;font-family:Arial,system-ui,-apple-system; background:linear-gradient(120deg,var(--bg1),var(--bg2)); color:#fff}
+    .container{max-width:740px;margin:32px auto;padding:20px;background:var(--panel);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.6)}
+    h2{margin:0 0 12px;text-align:center;color:var(--accent)}
+    label{display:block;margin-top:12px;color:var(--muted);font-size:.95rem}
+    input,select,button{width:100%;padding:10px;margin-top:8px;border-radius:8px;border:0;box-sizing:border-box}
+    input::placeholder{color:#cbd5e1}
+    button{background:var(--accent);cursor:pointer;font-weight:700}
+    button.secondary{background:#64748b}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,.08);color:#fff}
+    .flex{display:flex;gap:8px}
+    .badge{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;background:#111827;margin:6px}
+    .badges{margin-top:12px}
+    .result{margin-top:16px;padding:12px;background:#0b1220;border-radius:8px}
+    .controls{display:flex;gap:8px;margin-top:12px}
+    .small{font-size:.9rem;color:var(--muted)}
+    .row{display:flex;gap:8px;align-items:center}
+    .remove-btn{background:#ef4444;padding:6px 8px;border-radius:6px;font-weight:700;cursor:pointer}
+    @media (min-width:640px){
+      .controls>button{flex:1}
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="app">
+    <h2>⚖️ LLCS RP - HỆ THỐNG XỬ ÁN</h2>
+
+    <!-- SYSTEM (no login) -->
+    <div id="system" aria-live="polite">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h3 id="welcome" style="margin:0"></h3>
+        <div>
+          <button id="logoutBtn" class="ghost">Xóa dữ liệu / Tải lại</button>
+        </div>
+      </div>
+
+      <label for="crime">Chọn tội danh</label>
+      <select id="crime" aria-label="Chọn tội danh"></select>
+
+      <label for="factor">Tình tiết</label>
+      <select id="factor" aria-label="Chọn tình tiết">
+        <option value="1">Bình thường</option>
+        <option value="1.5">Tái phạm (+50%)</option>
+        <option value="0.7">Giảm nhẹ (-30%)</option>
+      </select>
+
+      <div class="controls">
+        <button id="addBtn">+ Thêm tội</button>
+        <button id="clearBtn" class="secondary">Xoá danh sách</button>
+      </div>
+
+      <div class="badges" id="list" aria-live="polite"></div>
+
+      <div class="controls" style="margin-top:8px">
+        <button id="calcBtn">⚖️ Tính án</button>
+        <button id="exportBtn">📄 Xuất biên bản PDF</button>
+      </div>
+
+      <div class="result" id="result" aria-live="polite">Chưa có dữ liệu.</div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    "use strict";
+
+    // Data
+    const crimes = [
+      { name: "Cướp tài sản", min: 120 },
+      { name: "Hành hung", min: 60 },
+      { name: "Trộm cắp", min: 90 },
+      { name: "Lừa đảo", min: 150 },
+      { name: "Buôn lậu", min: 200 },
+      { name: "Gây rối", min: 45 }
+    ];
+
+    // State
+    let caseList = [];
+    // Auto user (login skipped)
+    let currentUser = "giakha";
+    let currentRole = "Thẩm phán";
+    const STORAGE_KEY = "llcs_caseList_v1";
+
+    // Elements
+    const systemBox = document.getElementById("system");
+    const crimeSelect = document.getElementById("crime");
+    const factorSelect = document.getElementById("factor");
+    const listEl = document.getElementById("list");
+    const resultEl = document.getElementById("result");
+    const welcomeEl = document.getElementById("welcome");
+
+    // Buttons
+    const logoutBtn = document.getElementById("logoutBtn");
+    const addBtn = document.getElementById("addBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const calcBtn = document.getElementById("calcBtn");
+    const exportBtn = document.getElementById("exportBtn");
+    // Optional demo via double-click on title (keeps UI minimal)
+    // Init
+    function init() {
+      populateCrimeOptions();
+      loadFromStorage();
+      attachListeners();
+      // show system immediately with preset user
+      systemBox.style.display = "block";
+      welcomeEl.innerText = `👤 ${currentRole}: ${currentUser}`;
+      render();
+    }
+
+    function populateCrimeOptions() {
+      // clear first
+      crimeSelect.innerHTML = "";
+      crimes.forEach((c, i) => {
+        const o = document.createElement("option");
+        o.value = i;
+        o.innerText = `${c.name} (${c.min} phút)`;
+        crimeSelect.appendChild(o);
+      });
+    }
+
+    function attachListeners() {
+      logoutBtn.addEventListener("click", handleLogout);
+      addBtn.addEventListener("click", handleAdd);
+      clearBtn.addEventListener("click", handleClear);
+      calcBtn.addEventListener("click", handleCalc);
+      exportBtn.addEventListener("click", handleExport);
+      // double-click title to add demo items quickly
+      document.querySelector("h2").addEventListener("dblclick", handleDemo);
+    }
+
+    function handleDemo() {
+      // add demo items for quick testing
+      caseList = [
+        { name: "Cướp tài sản", min: 120, factor: 1.5 },
+        { name: "Gây rối", min: 45, factor: 0.7 }
+      ];
+      saveToStorage();
+      render();
+      handleCalc();
+    }
+
+    function handleLogout() {
+      if (!confirm("Xóa dữ liệu lưu trữ (danh sách tội danh)? Sau đó trang sẽ tải lại.")) return;
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      location.reload();
+    }
+
+    function handleAdd() {
+      const idx = Number(crimeSelect.value);
+      const factor = parseFloat(factorSelect.value) || 1;
+      if (!Number.isFinite(idx) || !crimes[idx]) {
+        alert("Chọn tội hợp lệ.");
+        return;
+      }
+      caseList.push({
+        name: crimes[idx].name,
+        min: crimes[idx].min,
+        factor
+      });
+      saveToStorage();
+      render();
+    }
+
+    function handleClear() {
+      if (!caseList.length) return;
+      if (!confirm("Xoá toàn bộ danh sách tội danh?")) return;
+      caseList = [];
+      saveToStorage();
+      render();
+    }
+
+    function handleCalc() {
+      const total = calcTotal();
+      renderResult(total);
+      return total;
+    }
+
+    function handleExport() {
+      // ensure total is up-to-date
+      const total = handleCalc();
+      if (!caseList.length) return alert("Danh sách tội rỗng.");
+      // Create PDF
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+
+      // NOTE: For correct Vietnamese characters, embed a UTF-8 font (see notes below).
+      // Example (requires base64 TTF):
+      // doc.addFileToVFS("DejaVuSans.ttf", "<BASE64_TTF_DATA>");
+      // doc.addFont("DejaVuSans.ttf", "DejaVuSans", "normal");
+      // doc.setFont("DejaVuSans");
+
+      doc.setFontSize(14);
+      doc.text("BIÊN BẢN XỬ ÁN RP", 14, 18);
+      doc.setFontSize(11);
+      doc.text("Người xử án: " + currentUser, 14, 28);
+      doc.text("Ngày: " + new Date().toLocaleString(), 14, 36);
+
+      let y = 48;
+      caseList.forEach((c, i) => {
+        if (y > 270) { doc.addPage(); y = 20; }
+        doc.text(`${i + 1}. ${c.name} — ${c.min} phút × ${c.factor}`, 14, y);
+        y += 8;
+      });
+
+      doc.setFontSize(12);
+      doc.text(`TỔNG: ${Math.round(total)} phút (${minutesToReadable(total)})`, 14, y + 8);
+
+      doc.save("bien-ban-xu-an.pdf");
+    }
+
+    function calcTotal() {
+      let total = 0;
+      caseList.forEach(c => {
+        const min = Number(c.min) || 0;
+        const f = Number(c.factor) || 1;
+        total += min * f;
+      });
+      return Math.round(total);
+    }
+
+    function minutesToReadable(minutes) {
+      if (!minutes) return "0 phút";
+      const mins = Number(minutes);
+      const days = Math.floor(mins / (60 * 24));
+      const hours = Math.floor((mins % (60 * 24)) / 60);
+      const rem = mins % 60;
+      const parts = [];
+      if (days) parts.push(`${days} ngày`);
+      if (hours) parts.push(`${hours} giờ`);
+      if (rem) parts.push(`${rem} phút`);
+      return parts.join(" ");
+    }
+
+    function render() {
+      // Render badges with remove buttons
+      listEl.innerHTML = "";
+      if (!caseList.length) {
+        listEl.innerHTML = `<div class="small">Chưa có tội danh nào được thêm.</div>`;
+      } else {
+        caseList.forEach((c, i) => {
+          const wrapper = document.createElement("div");
+          wrapper.className = "badge";
+          wrapper.innerHTML = `<div style="min-width:220px">${c.name} | ${c.min}p | x${c.factor}</div>`;
+          const remove = document.createElement("button");
+          remove.className = "remove-btn";
+          remove.title = "Xoá tội này";
+          remove.innerText = "X";
+          remove.addEventListener("click", () => {
+            if (!confirm(`Xoá "${c.name}"?`)) return;
+            caseList.splice(i, 1);
+            saveToStorage();
+            render();
+          });
+          wrapper.appendChild(remove);
+          listEl.appendChild(wrapper);
+        });
+      }
+      // update small summary
+      const total = calcTotal();
+      renderResult(total, true);
+    }
+
+    function renderResult(total, inline = false) {
+      if (!caseList.length) {
+        resultEl.innerHTML = "Chưa có dữ liệu.";
+        return;
+      }
+      resultEl.innerHTML = `⏱ Tổng án: <b>${total} phút</b> — <span class="small">${minutesToReadable(total)}</span>`;
+      if (!inline) resultEl.scrollIntoView({ behavior: "smooth" });
+    }
+
+    function saveToStorage() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(caseList));
+      } catch (e) {
+        console.warn("Không thể lưu localStorage", e);
+      }
+    }
+
+    function loadFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) caseList = JSON.parse(raw) || [];
+      } catch (e) {
+        console.warn("Không thể đọc localStorage", e);
+      }
+    }
+
+    // Start
+    init();
+
+  })();
+  </script>
+</body>
+</html>
